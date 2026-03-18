@@ -1,3 +1,4 @@
+import random
 import csv
 from collections import defaultdict
 
@@ -7,29 +8,31 @@ from genedesign.models.transcript import Transcript
 
 class TranscriptDesigner:
     """
-    Reverse translates a protein sequence into a DNA sequence and chooses an RBS.
+    Reverse translates a protein sequence into a codon-optimized DNA sequence
+    and chooses an RBS.
     
-    Improvement over starter code: reads codon frequencies from codon_usage.txt
-    instead of using a hardcoded lookup table, and selects the highest-frequency
-    codon for each amino acid dynamically.
+    Improvement over v1: uses weighted random codon selection proportional to
+    E. coli codon usage frequencies instead of always picking the single best
+    codon. This produces better codon diversity while maintaining high CAI.
+    Also filters out rare codons (frequency < 0.10) to avoid translation stalls.
     """
 
     def __init__(self):
-        self.aminoAcidToCodon = {}
+        self.aa_to_codons = {}   # aa -> [(codon, freq), ...]
+        self.codon_to_aa = {}    # codon -> aa
+        self.rare_codons = set()
         self.rbsChooser = None
 
     def initiate(self) -> None:
         """
-        Initializes the RBS chooser and loads codon usage data from file
-        to build the amino acid to best-codon mapping.
+        Loads codon usage data and initializes the RBS chooser.
         """
         self.rbsChooser = RBSChooser()
         self.rbsChooser.initiate()
 
-        # Load codon usage data and pick the best codon per amino acid
+        # Load codon usage data from file
         codon_usage_file = 'genedesign/data/codon_usage.txt'
-        aa_to_codons = defaultdict(list)
-
+        raw = defaultdict(list)
         with open(codon_usage_file, 'r') as f:
             reader = csv.reader(f, delimiter='\t')
             for row in reader:
@@ -39,55 +42,77 @@ class TranscriptDesigner:
                 aa = row[1].strip()
                 freq = float(row[2].strip())
                 if aa == '*':
-                    continue  # skip stop codons
-                aa_to_codons[aa].append((codon, freq))
+                    continue
+                raw[aa].append((codon, freq))
+                self.codon_to_aa[codon] = aa
 
-        # Select highest-frequency codon for each amino acid
-        self.aminoAcidToCodon = {}
-        for aa, codon_list in aa_to_codons.items():
-            best_codon = max(codon_list, key=lambda x: x[1])
-            self.aminoAcidToCodon[aa] = best_codon[0]
+        # Sort codons by descending frequency for each amino acid
+        self.aa_to_codons = {}
+        for aa, codon_list in raw.items():
+            self.aa_to_codons[aa] = sorted(codon_list, key=lambda x: -x[1])
+
+        # Identify rare codons (freq < 0.10) to exclude from selection
+        self.rare_codons = set()
+        for aa, codon_list in self.aa_to_codons.items():
+            for codon, freq in codon_list:
+                if freq < 0.10:
+                    self.rare_codons.add(codon)
+
+    def _weighted_random_codon(self, aa: str) -> str:
+        """Pick a codon for the amino acid with probability proportional to
+        its usage frequency, excluding rare codons when possible."""
+        options = self.aa_to_codons[aa]
+        # Filter out rare codons if there are non-rare alternatives
+        good = [(c, w) for c, w in options if c not in self.rare_codons]
+        if not good:
+            good = options
+        codons = [c for c, _ in good]
+        weights = [w for _, w in good]
+        return random.choices(codons, weights=weights, k=1)[0]
 
     def run(self, peptide: str, ignores: set) -> Transcript:
         """
-        Translates the peptide sequence to DNA and selects an RBS.
+        Translates the peptide sequence to a codon-optimized DNA sequence
+        and selects an RBS.
         
         Parameters:
             peptide (str): The protein sequence to translate.
             ignores (set): RBS options to ignore.
         
         Returns:
-            Transcript: The transcript object with the selected RBS and translated codons.
+            Transcript: The transcript object with the selected RBS and codons.
         """
-        # Translate peptide to codons using the best codon for each amino acid
-        codons = [self.aminoAcidToCodon[aa] for aa in peptide]
+        # Generate codons using weighted random selection
+        codons = [self._weighted_random_codon(aa) for aa in peptide]
+        codons.append("TAA")  # stop codon
 
-        # Append the stop codon
-        codons.append("TAA")
-
-        # Build the CDS from the codons
+        # Build the CDS and choose an RBS
         cds = ''.join(codons)
-
-        # Choose an RBS
         selectedRBS = self.rbsChooser.run(cds, ignores)
 
-        # Return the Transcript object
         return Transcript(selectedRBS, peptide, codons)
 
 
 if __name__ == "__main__":
-    # Example usage of TranscriptDesigner
-    peptide = "MYPFIRTARMTV"
-    
+    from genedesign.checkers.codon_checker import CodonChecker
+    from genedesign.seq_utils.Translate import Translate
+
+    peptide = "MYPFIRTARMTVCAKKHVHLTRDAAEQLLADIDRRLDQLLPVEGERDVVGAAMREGALAPGKRIRPMLLLLTARDLGCAVSHDGLLDLACAVEMVHAASLILDDMPCMDDAKLRRGRPTIHSHYGEHVAILAAVALLSKAFGVIADADGLTPLAKNRAVSELSNAIGMQGLVQGQFKDLSEGDKPRSAEAILMTNHFKTSTLFCASMQMASIVANASSEARDCLHRFSLDLGQAFQLLDDLTDGMTDTGKDSNQDAGKSTLVNLLGPRAVEERLRQHLQLASEHLSAACQHGHATQHFIQAWFDKKLAAVS"
+
     designer = TranscriptDesigner()
     designer.initiate()
+    transcript = designer.run(peptide, set())
 
-    ignores = set()
-    transcript = designer.run(peptide, ignores)
-    
     cds = ''.join(transcript.codons)
-    print(f"CDS: {cds}")
-    print(f"Length: {len(cds)}")
-    print(f"Starts with ATG: {cds.startswith('ATG')}")
-    print(f"RBS: {transcript.rbs.gene_name}")
 
+    # Verify translation
+    translator = Translate()
+    translator.initiate()
+    protein = translator.run(cds)
+    print(f"Protein match: {protein == peptide}")
+
+    # Check codon quality
+    cc = CodonChecker()
+    cc.initiate()
+    cab, div, rare, cai = cc.run(transcript.codons)
+    print(f"Codon check: passes={cab}, diversity={div:.3f}, rare={rare}, CAI={cai:.3f}")
