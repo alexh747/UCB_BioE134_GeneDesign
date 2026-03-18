@@ -1,1 +1,93 @@
+import csv
+from collections import defaultdict
+
+from genedesign.rbs_chooser import RBSChooser
+from genedesign.models.transcript import Transcript
+
+
+class TranscriptDesigner:
+    """
+    Reverse translates a protein sequence into a DNA sequence and chooses an RBS.
+    
+    Improvement over starter code: reads codon frequencies from codon_usage.txt
+    instead of using a hardcoded lookup table, and selects the highest-frequency
+    codon for each amino acid dynamically.
+    """
+
+    def __init__(self):
+        self.aminoAcidToCodon = {}
+        self.rbsChooser = None
+
+    def initiate(self) -> None:
+        """
+        Initializes the RBS chooser and loads codon usage data from file
+        to build the amino acid to best-codon mapping.
+        """
+        self.rbsChooser = RBSChooser()
+        self.rbsChooser.initiate()
+
+        # Load codon usage data and pick the best codon per amino acid
+        codon_usage_file = 'genedesign/data/codon_usage.txt'
+        aa_to_codons = defaultdict(list)
+
+        with open(codon_usage_file, 'r') as f:
+            reader = csv.reader(f, delimiter='\t')
+            for row in reader:
+                if len(row) < 4:
+                    continue
+                codon = row[0].strip()
+                aa = row[1].strip()
+                freq = float(row[2].strip())
+                if aa == '*':
+                    continue  # skip stop codons
+                aa_to_codons[aa].append((codon, freq))
+
+        # Select highest-frequency codon for each amino acid
+        self.aminoAcidToCodon = {}
+        for aa, codon_list in aa_to_codons.items():
+            best_codon = max(codon_list, key=lambda x: x[1])
+            self.aminoAcidToCodon[aa] = best_codon[0]
+
+    def run(self, peptide: str, ignores: set) -> Transcript:
+        """
+        Translates the peptide sequence to DNA and selects an RBS.
+        
+        Parameters:
+            peptide (str): The protein sequence to translate.
+            ignores (set): RBS options to ignore.
+        
+        Returns:
+            Transcript: The transcript object with the selected RBS and translated codons.
+        """
+        # Translate peptide to codons using the best codon for each amino acid
+        codons = [self.aminoAcidToCodon[aa] for aa in peptide]
+
+        # Append the stop codon
+        codons.append("TAA")
+
+        # Build the CDS from the codons
+        cds = ''.join(codons)
+
+        # Choose an RBS
+        selectedRBS = self.rbsChooser.run(cds, ignores)
+
+        # Return the Transcript object
+        return Transcript(selectedRBS, peptide, codons)
+
+
+if __name__ == "__main__":
+    # Example usage of TranscriptDesigner
+    peptide = "MYPFIRTARMTV"
+    
+    designer = TranscriptDesigner()
+    designer.initiate()
+
+    ignores = set()
+    transcript = designer.run(peptide, ignores)
+    
+    cds = ''.join(transcript.codons)
+    print(f"CDS: {cds}")
+    print(f"Length: {len(cds)}")
+    print(f"Starts with ATG: {cds.startswith('ATG')}")
+    print(f"RBS: {transcript.rbs.gene_name}")
 
