@@ -407,28 +407,3 @@ if __name__ == "__main__":
     print(f"CDS ends with stop:  {cds[-3:] in ('TAA','TGA','TAG')}")
     print(f"RBS: {transcript.rbs.gene_name}")
 
-    # Verify with all checkers
-    from genedesign.seq_utils.Translate import Translate
-    translator = Translate()
-    translator.initiate()
-    protein = translator.run(cds)
-    print(f"Protein match: {protein == peptide}")
-
-    codon_checker = CodonChecker()
-    codon_checker.initiate()
-    cab, div, rare, cai = codon_checker.run(transcript.codons)
-    print(f"Codon check: passes={cab}, diversity={div:.3f}, rare={rare}, CAI={cai:.3f}")
-
-    forbidden_checker = ForbiddenSequenceChecker()
-    forbidden_checker.initiate()
-    print(f"Forbidden: {forbidden_checker.run(cds)}")
-
-    promoter_checker = PromoterChecker()
-    promoter_checker.initiate()
-    print(f"Promoter:  {promoter_checker.run(cds)}")
-
-    print(f"Hairpin:   {hairpin_checker(cds)}")
-
-    gc_checker = GCContentChecker()
-    gc_checker.initiate()
-    print(f"GC content: {gc_checker.run(cds)}")
